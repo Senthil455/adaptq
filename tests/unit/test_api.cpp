@@ -157,6 +157,113 @@ TEST_CASE("single-head API rejects null handles and buffers without crashing", "
     adaptq_destroy(h);
 }
 
+/* ---- Error state -------------------------------------------------------- */
+
+TEST_CASE("successful operations clear the previous error state", "[api][error]") {
+    /* A failed create followed by a successful one must not leave the failure
+     * in the buffer: create returns a handle, but the documented contract says
+     * an empty string means no error has occurred. */
+    REQUIRE(adaptq_create(0, 4, 4, 8, 0, 0.f, 0) == nullptr);
+    REQUIRE(adaptq_last_error_code() == ADAPTQ_ERR_INVALID_ARG);
+
+    adaptq_ctx_t h = adaptq_create(64, 4, 4, 8, 0, 0.f, 0);
+    REQUIRE(h != nullptr);
+    REQUIRE(std::string(adaptq_last_error()).empty());
+    REQUIRE(adaptq_last_error_code() == ADAPTQ_OK);
+
+    float k[64] = {}, v[64] = {}, q[64] = {}, out[64] = {};
+
+    /* adaptq_append returns void, so the error string is the only failure
+     * channel. A successful append must clear the earlier failure. */
+    adaptq_append(h, nullptr, v, 0);
+    REQUIRE(adaptq_last_error_code() == ADAPTQ_ERR_INVALID_ARG);
+    REQUIRE(std::string(adaptq_last_error()).find("adaptq_append: null key") != std::string::npos);
+
+    adaptq_append(h, k, v, 0);
+    REQUIRE(std::string(adaptq_last_error()).empty());
+    REQUIRE(adaptq_last_error_code() == ADAPTQ_OK);
+
+    REQUIRE(adaptq_compute(nullptr, q, out) == -1);
+    REQUIRE(adaptq_last_error_code() == ADAPTQ_ERR_INVALID_ARG);
+
+    REQUIRE(adaptq_compute(h, q, out) == 1);
+    REQUIRE(std::string(adaptq_last_error()).empty());
+    REQUIRE(adaptq_last_error_code() == ADAPTQ_OK);
+
+    adaptq_append(h, k, nullptr, 0);
+    REQUIRE(adaptq_last_error_code() == ADAPTQ_ERR_INVALID_ARG);
+
+    adaptq_reset(h);
+    REQUIRE(std::string(adaptq_last_error()).empty());
+    REQUIRE(adaptq_last_error_code() == ADAPTQ_OK);
+
+    adaptq_destroy(h);
+}
+
+TEST_CASE("error codes distinguish invalid arguments from out-of-range indices", "[api][error][mha]") {
+    adaptq_mha_t mha = adaptq_mha_create(4, 64, 4, 4, 8, 0, 0.f, 0);
+    REQUIRE(mha != nullptr);
+    REQUIRE(adaptq_last_error_code() == ADAPTQ_OK);
+
+    float q[64] = {}, out[64] = {};
+
+    REQUIRE(adaptq_mha_compute(mha, 4, q, out) == -1);
+    REQUIRE(adaptq_last_error_code() == ADAPTQ_ERR_OUT_OF_BOUNDS);
+    REQUIRE(std::string(adaptq_last_error()).find("head_idx out of range") != std::string::npos);
+
+    REQUIRE(adaptq_mha_compute(mha, -1, q, out) == -1);
+    REQUIRE(adaptq_last_error_code() == ADAPTQ_ERR_OUT_OF_BOUNDS);
+
+    REQUIRE(adaptq_mha_compute_batch(mha, 4, q, 0, out) == -1);
+    REQUIRE(adaptq_last_error_code() == ADAPTQ_ERR_OUT_OF_BOUNDS);
+
+    REQUIRE(adaptq_mha_compute_batch(mha, 0, q, -1, out) == -1);
+    REQUIRE(adaptq_last_error_code() == ADAPTQ_ERR_INVALID_ARG);
+
+    adaptq_mha_destroy(mha);
+}
+
+TEST_CASE("successful multi-head operations clear the previous error", "[api][error][mha]") {
+    adaptq_mha_t mha = adaptq_mha_create(4, 64, 4, 4, 8, 0, 0.f, 0);
+    REQUIRE(mha != nullptr);
+
+    float k[64] = {}, v[64] = {}, q[64] = {}, out[64] = {};
+
+    adaptq_mha_append(mha, 99, k, v, 0);
+    REQUIRE(adaptq_last_error_code() == ADAPTQ_ERR_OUT_OF_BOUNDS);
+
+    adaptq_mha_append(mha, 0, k, v, 0);
+    REQUIRE(std::string(adaptq_last_error()).empty());
+    REQUIRE(adaptq_last_error_code() == ADAPTQ_OK);
+
+    REQUIRE(adaptq_mha_compute(mha, 99, q, out) == -1);
+    REQUIRE(adaptq_last_error_code() == ADAPTQ_ERR_OUT_OF_BOUNDS);
+
+    REQUIRE(adaptq_mha_compute(mha, 0, q, out) == 1);
+    REQUIRE(std::string(adaptq_last_error()).empty());
+    REQUIRE(adaptq_last_error_code() == ADAPTQ_OK);
+
+    adaptq_mha_destroy(mha);
+}
+
+TEST_CASE("destroy preserves the error state for post-cleanup reporting", "[api][error]") {
+    float k[64] = {}, v[64] = {};
+    adaptq_ctx_t h = adaptq_create(64, 4, 4, 8, 0, 0.f, 0);
+    REQUIRE(h != nullptr);
+
+    adaptq_append(h, k, nullptr, 0);
+    REQUIRE(adaptq_last_error_code() == ADAPTQ_ERR_INVALID_ARG);
+
+    /* Cleanup is a separate concern: it must not erase the failure the caller
+     * still needs to log or translate. */
+    adaptq_destroy(h);
+    REQUIRE(std::string(adaptq_last_error()).find("adaptq_append: null val") != std::string::npos);
+    REQUIRE(adaptq_last_error_code() == ADAPTQ_ERR_INVALID_ARG);
+
+    adaptq_destroy(nullptr);
+    REQUIRE(adaptq_last_error_code() == ADAPTQ_ERR_INVALID_ARG);
+}
+
 /* ---- Multi-head -------------------------------------------------------- */
 
 TEST_CASE("adaptq_mha_create / destroy", "[api][mha]") {
